@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   needlemanWunsch,
   type AlignmentResult,
@@ -6,547 +6,900 @@ import {
 } from "./utils/needlemanWunsch";
 import "./App.css";
 
-/**
- * CLO1 (Design): UI Architecture
- * - Component-based design for DNA sequence alignment visualization
- * - Separates concerns: input, algorithm, visualization, and results
- */
-function App() {
-  // Input state for DNA sequences
-  const [seq1, setSeq1] = useState<string>("ATGC");
-  const [seq2, setSeq2] = useState<string>("AGGTC");
+// ─── Animated DNA helix background ───────────────────────────────────────────
+const HelixCanvas = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d")!;
+    let frame = 0;
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const resize = () => {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    };
+    window.addEventListener("resize", resize);
+    const bases = ["A", "T", "G", "C"];
+    const COLS = Math.ceil(canvas.width / 120) + 1;
 
-  // Scoring system state
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const t = frame * 0.012;
+
+      for (let col = 0; col < COLS; col++) {
+        const x = col * 120 + 40;
+        const STEPS = 18;
+        for (let s = 0; s < STEPS; s++) {
+          const progress = s / STEPS;
+          const y = progress * canvas.height;
+          const phase = t + col * 1.3 + s * 0.35;
+          const y1 = y + Math.sin(phase) * 22;
+          const y2 = y + Math.sin(phase + Math.PI) * 22;
+          const x1 = x + Math.cos(phase) * 14;
+          const x2 = x - Math.cos(phase) * 14;
+
+          // Backbone strand 1
+          if (s < STEPS - 1) {
+            const ny = (progress + 1 / STEPS) * canvas.height;
+            const np = t + col * 1.3 + (s + 1) * 0.35;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x + Math.cos(np) * 14, ny + Math.sin(np) * 22);
+            ctx.strokeStyle = "rgba(251,146,60,0.13)";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(x2, y2);
+            ctx.lineTo(x - Math.cos(np) * 14, ny + Math.sin(np + Math.PI) * 22);
+            ctx.strokeStyle = "rgba(239,68,68,0.10)";
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
+
+          // Rungs
+          const alpha = 0.06 + 0.04 * Math.abs(Math.cos(phase));
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = `rgba(251,146,60,${alpha})`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          // Base letters
+          if (s % 3 === 0) {
+            const base = bases[(col * 4 + s) % 4];
+            ctx.font = "bold 9px 'JetBrains Mono', monospace";
+            ctx.fillStyle = `rgba(251,146,60,${alpha * 2})`;
+            ctx.fillText(base, (x1 + x2) / 2 - 4, (y1 + y2) / 2 + 3);
+          }
+        }
+      }
+      frame++;
+      requestAnimationFrame(draw);
+    };
+    draw();
+    return () => window.removeEventListener("resize", resize);
+  }, []);
+  return (
+    <canvas
+      ref={canvasRef}
+      className="fixed inset-0 pointer-events-none z-0"
+      style={{ opacity: 0.6 }}
+    />
+  );
+};
+
+// ─── Glowing score badge ──────────────────────────────────────────────────────
+const ScoreBadge = ({ score }: { score: number }) => {
+  const color = score > 0 ? "#22c55e" : score === 0 ? "#f59e0b" : "#ef4444";
+  return (
+    <div className="relative flex flex-col items-center justify-center w-32 h-32">
+      <div
+        className="absolute inset-0 rounded-full opacity-20 blur-xl"
+        style={{ background: color }}
+      />
+      <div
+        className="relative w-full h-full rounded-full border-2 flex flex-col items-center justify-center"
+        style={{ borderColor: color, boxShadow: `0 0 24px ${color}55` }}
+      >
+        <span className="text-3xl font-black" style={{ color }}>
+          {score > 0 ? `+${score}` : score}
+        </span>
+        <span className="text-[10px] uppercase tracking-widest text-gray-400 font-bold mt-0.5">
+          Score
+        </span>
+      </div>
+    </div>
+  );
+};
+
+// ─── Circular quality ring ────────────────────────────────────────────────────
+const QualityRing = ({
+  seq1Aligned,
+  seq2Aligned,
+}: {
+  seq1Aligned: string;
+  seq2Aligned: string;
+}) => {
+  let matches = 0,
+    mismatches = 0,
+    gaps = 0;
+  for (let i = 0; i < seq1Aligned.length; i++) {
+    if (seq1Aligned[i] === "-" || seq2Aligned[i] === "-") gaps++;
+    else if (seq1Aligned[i] === seq2Aligned[i]) matches++;
+    else mismatches++;
+  }
+  const total = seq1Aligned.length;
+  const pct = Math.round((matches / total) * 100);
+  const r = 52;
+  const circ = 2 * Math.PI * r;
+  const matchArc = (matches / total) * circ;
+  const mismatchArc = (mismatches / total) * circ;
+  const gapArc = (gaps / total) * circ;
+
+  const segments = [
+    { len: matchArc, color: "#22c55e", offset: 0 },
+    { len: mismatchArc, color: "#f59e0b", offset: matchArc },
+    { len: gapArc, color: "#ef4444", offset: matchArc + mismatchArc },
+  ];
+
+  return (
+    <div className="flex flex-col items-center gap-4">
+      <div className="relative w-40 h-40">
+        <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+          <circle
+            cx="60"
+            cy="60"
+            r={r}
+            fill="none"
+            stroke="#1e293b"
+            strokeWidth="10"
+          />
+          {segments.map((seg, i) => (
+            <circle
+              key={i}
+              cx="60"
+              cy="60"
+              r={r}
+              fill="none"
+              stroke={seg.color}
+              strokeWidth="10"
+              strokeDasharray={`${seg.len} ${circ - seg.len}`}
+              strokeDashoffset={-seg.offset}
+              strokeLinecap="butt"
+            />
+          ))}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-3xl font-black text-white">
+            {pct}
+            <span className="text-lg text-gray-400">%</span>
+          </span>
+          <span className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">
+            Identity
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3 text-center w-full">
+        {[
+          { label: "Matches", count: matches, color: "#22c55e", icon: "✓" },
+          { label: "Mismatch", count: mismatches, color: "#f59e0b", icon: "≠" },
+          { label: "Gaps", count: gaps, color: "#ef4444", icon: "—" },
+        ].map((s) => (
+          <div
+            key={s.label}
+            className="rounded-xl p-2.5 border"
+            style={{ borderColor: s.color + "44", background: s.color + "11" }}
+          >
+            <div className="text-lg font-black" style={{ color: s.color }}>
+              {s.count}
+            </div>
+            <div className="text-[10px] text-gray-400 font-semibold uppercase tracking-wide">
+              {s.label}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ─── Sequence visualizer ──────────────────────────────────────────────────────
+const SeqVisualizer = ({
+  seq1Aligned,
+  seq2Aligned,
+}: {
+  seq1Aligned: string;
+  seq2Aligned: string;
+}) => {
+  const [hovered, setHovered] = useState<number | null>(null);
+
+  const getCellStyle = (c1: string, c2: string) => {
+    if (c1 === "-" || c2 === "-")
+      return { bg: "#7f1d1d", border: "#ef4444", glow: "#ef444455" };
+    if (c1 === c2)
+      return { bg: "#14532d", border: "#22c55e", glow: "#22c55e55" };
+    return { bg: "#78350f", border: "#f59e0b", glow: "#f59e0b55" };
+  };
+
+  const CONNECTOR_MAP: Record<string, string> = {
+    match: "|",
+    mismatch: "·",
+    gap: " ",
+  };
+
+  return (
+    <div className="space-y-1">
+      {/* Label row */}
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] uppercase tracking-widest text-gray-500 font-bold w-6">
+          S1
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {seq1Aligned.split("").map((char, i) => {
+            const style = getCellStyle(char, seq2Aligned[i]);
+            const isH = hovered === i;
+            return (
+              <div
+                key={i}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+                className="w-8 h-8 flex items-center justify-center font-mono font-black text-sm rounded-md cursor-pointer transition-all duration-150 select-none"
+                style={{
+                  background: style.bg,
+                  border: `1.5px solid ${isH ? style.border : style.border + "88"}`,
+                  boxShadow: isH ? `0 0 14px ${style.glow}` : "none",
+                  transform: isH ? "translateY(-3px) scale(1.18)" : "none",
+                  color: "#fff",
+                  zIndex: isH ? 10 : 1,
+                  position: "relative",
+                }}
+              >
+                {char}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Connectors */}
+      <div className="flex items-center gap-2">
+        <span className="w-6" />
+        <div className="flex flex-wrap gap-1">
+          {seq1Aligned.split("").map((c1, i) => {
+            const c2 = seq2Aligned[i];
+            const type =
+              c1 === "-" || c2 === "-"
+                ? "gap"
+                : c1 === c2
+                  ? "match"
+                  : "mismatch";
+            return (
+              <div
+                key={i}
+                className="w-8 h-4 flex items-center justify-center font-mono text-sm"
+                style={{
+                  color:
+                    type === "match"
+                      ? "#22c55e"
+                      : type === "mismatch"
+                        ? "#f59e0b"
+                        : "#ef4444",
+                  opacity: hovered === i ? 1 : 0.5,
+                }}
+              >
+                {CONNECTOR_MAP[type]}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Seq2 row */}
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-widest text-gray-500 font-bold w-6">
+          S2
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {seq2Aligned.split("").map((char, i) => {
+            const style = getCellStyle(seq1Aligned[i], char);
+            const isH = hovered === i;
+            return (
+              <div
+                key={i}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+                className="w-8 h-8 flex items-center justify-center font-mono font-black text-sm rounded-md cursor-pointer transition-all duration-150 select-none"
+                style={{
+                  background: style.bg,
+                  border: `1.5px solid ${isH ? style.border : style.border + "88"}`,
+                  boxShadow: isH ? `0 0 14px ${style.glow}` : "none",
+                  transform: isH ? "translateY(3px) scale(1.18)" : "none",
+                  color: "#fff",
+                  zIndex: isH ? 10 : 1,
+                  position: "relative",
+                }}
+              >
+                {char}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-5 pt-3">
+        {[
+          { color: "#22c55e", label: "Match" },
+          { color: "#f59e0b", label: "Mismatch" },
+          { color: "#ef4444", label: "Gap" },
+        ].map((l) => (
+          <div key={l.label} className="flex items-center gap-1.5">
+            <div
+              className="w-3 h-3 rounded-sm"
+              style={{ background: l.color, boxShadow: `0 0 6px ${l.color}` }}
+            />
+            <span className="text-xs text-gray-400 font-semibold">
+              {l.label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// ─── DP matrix viewer ─────────────────────────────────────────────────────────
+const MatrixView = ({
+  matrix,
+  seq1,
+  seq2,
+  traceback,
+}: {
+  matrix: number[][];
+  seq1: string;
+  seq2: string;
+  traceback: { row: number; col: number }[];
+}) => {
+  const isPath = (r: number, c: number) =>
+    traceback.some((p) => p.row === r && p.col === c);
+
+  const allVals = matrix.flat();
+  const minVal = Math.min(...allVals);
+  const maxVal = Math.max(...allVals);
+
+  const heatColor = (v: number): string => {
+    const t = (v - minVal) / (maxVal - minVal || 1);
+    const r = Math.round(15 + t * 30);
+    const g = Math.round(41 + t * 60);
+    const b = Math.round(66 + t * 20);
+    return `rgb(${r},${g},${b})`;
+  };
+
+  return (
+    <div className="overflow-auto max-h-80">
+      <table className="text-xs border-collapse w-full">
+        <thead>
+          <tr>
+            <th className="px-2 py-1.5 text-gray-500 font-bold border border-slate-700/50 bg-slate-900/80 sticky top-0 z-10" />
+            <th className="px-2 py-1.5 text-gray-500 font-bold border border-slate-700/50 bg-slate-900/80 sticky top-0 z-10">
+              —
+            </th>
+            {seq2.split("").map((c, j) => (
+              <th
+                key={j}
+                className="px-2 py-1.5 border border-slate-700/50 bg-slate-900/80 sticky top-0 z-10"
+              >
+                <span className="font-black text-orange-400">{c}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {matrix.map((row, i) => (
+            <tr key={i}>
+              <td className="px-2 py-1.5 border border-slate-700/50 bg-slate-900/80 font-black text-orange-400 text-center sticky left-0 z-10">
+                {i === 0 ? "—" : seq1[i - 1]}
+              </td>
+              {row.map((val, j) => {
+                const path = isPath(i, j);
+                return (
+                  <td
+                    key={j}
+                    className="px-2 py-1.5 text-center border font-mono font-bold transition-all"
+                    style={{
+                      background: path
+                        ? "linear-gradient(135deg,#ea580c,#dc2626)"
+                        : heatColor(val),
+                      borderColor: path ? "#f97316" : "#1e293b",
+                      color: path ? "#fff" : val >= 0 ? "#86efac" : "#fca5a5",
+                      boxShadow: path ? "0 0 10px #f9731688" : "none",
+                    }}
+                  >
+                    {val}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
+// ─── Slider input ─────────────────────────────────────────────────────────────
+const SliderInput = ({
+  label,
+  value,
+  onChange,
+  color,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  color: string;
+}) => (
+  <div className="space-y-1.5">
+    <div className="flex items-center justify-between">
+      <label className="text-xs uppercase tracking-widest font-bold text-gray-400">
+        {label}
+      </label>
+      <span className="font-black text-sm w-8 text-right" style={{ color }}>
+        {value > 0 ? `+${value}` : value}
+      </span>
+    </div>
+    <input
+      type="range"
+      min={-5}
+      max={5}
+      value={value}
+      onChange={(e) => onChange(parseInt(e.target.value))}
+      className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+      style={{
+        background: `linear-gradient(to right, ${color} 0%, ${color} ${((value + 5) / 10) * 100}%, #334155 ${((value + 5) / 10) * 100}%, #334155 100%)`,
+        accentColor: color,
+      }}
+    />
+  </div>
+);
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [seq1, setSeq1] = useState("ATGCGTAC");
+  const [seq2, setSeq2] = useState("AGGTCATC");
   const [scoring, setScoring] = useState<ScoringSystem>({
-    match: 1,
+    match: 2,
     mismatch: -1,
     gap: -2,
   });
-
-  // Result state
   const [result, setResult] = useState<AlignmentResult | null>(null);
+  const [running, setRunning] = useState(false);
+  const [activeTab, setActiveTab] = useState<"visual" | "matrix">("visual");
 
-  /**
-   * CLO2 (Analysis): Performance Tracking
-   * Demonstrates O(M × N) complexity through execution time measurement
-   */
-  const handleAlign = () => {
-    const seqResult = needlemanWunsch(
-      seq1.toUpperCase(),
-      seq2.toUpperCase(),
-      scoring,
-    );
-    setResult(seqResult);
-  };
-
-  const isPathCell = (row: number, col: number): boolean => {
-    return (
-      result?.traceback.some((p) => p.row === row && p.col === col) ?? false
-    );
-  };
-
-  // Validate DNA sequences
-  const isValidDNA = (seq: string): boolean => {
-    return /^[ATGC]*$/.test(seq.toUpperCase());
-  };
-
-  /**
-   * Determine color for each character in alignment visualization
-   * Emerald: Match, Amber: Mismatch, Ruby: Gap
-   */
-  const getCharColor = (char1: string, char2: string): string => {
-    if (char1 === "-" || char2 === "-") {
-      return "bg-red-600"; // Gap - Ruby Red
-    }
-    if (char1 === char2) {
-      return "bg-emerald-600"; // Match - Emerald Green
-    }
-    return "bg-amber-500"; // Mismatch - Amber Orange
-  };
-
-  /**
-   * Circular Progress Indicator for Alignment Quality
-   */
-  const AlignmentQualityIndicator = ({
-    seq1Aligned,
-    seq2Aligned,
-  }: {
-    seq1Aligned: string;
-    seq2Aligned: string;
-  }) => {
-    // Calculate match percentage
-    let matches = 0;
-    for (let i = 0; i < seq1Aligned.length; i++) {
-      if (
-        seq1Aligned[i] === seq2Aligned[i] &&
-        seq1Aligned[i] !== "-" &&
-        seq2Aligned[i] !== "-"
-      ) {
-        matches++;
-      }
-    }
-    const percentage = Math.round((matches / seq1Aligned.length) * 100);
-    const circumference = 2 * Math.PI * 45;
-    const offset = circumference - (percentage / 100) * circumference;
-
-    return (
-      <div className="flex flex-col items-center justify-center">
-        <div className="relative w-48 h-48">
-          <svg
-            className="w-full h-full transform -rotate-90"
-            viewBox="0 0 120 120"
-          >
-            {/* Background circle */}
-            <circle
-              cx="60"
-              cy="60"
-              r="45"
-              fill="none"
-              stroke="#e5e7eb"
-              strokeWidth="8"
-            />
-            {/* Progress circle - Animated */}
-            <circle
-              cx="60"
-              cy="60"
-              r="45"
-              fill="none"
-              stroke="url(#gradientStroke)"
-              strokeWidth="8"
-              strokeDasharray={circumference}
-              strokeDashoffset={offset}
-              strokeLinecap="round"
-              className="transition-all duration-1000 ease-out"
-              style={{
-                filter: "drop-shadow(0 0 10px rgba(249, 115, 22, 0.6))",
-              }}
-            />
-            <defs>
-              <linearGradient
-                id="gradientStroke"
-                x1="0%"
-                y1="0%"
-                x2="100%"
-                y2="100%"
-              >
-                <stop offset="0%" stopColor="#f97316" />
-                <stop offset="50%" stopColor="#fb923c" />
-                <stop offset="100%" stopColor="#dc2626" />
-              </linearGradient>
-            </defs>
-          </svg>
-          {/* Center content */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <p className="text-4xl font-black text-orange-400">{percentage}%</p>
-            <p className="text-sm font-bold text-gray-300">Match Quality</p>
-          </div>
-        </div>
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-300">
-            <span className="font-bold text-orange-400">{matches} matches</span>{" "}
-            out of{" "}
-            <span className="font-bold text-gray-200">
-              {seq1Aligned.length}
-            </span>{" "}
-            positions
-          </p>
-        </div>
-      </div>
-    );
-  };
-
-  /**
-   * Render visual alignment visualization with colored boxes
-   */
-  const VisualAlignment = ({
-    seq1Aligned,
-    seq2Aligned,
-  }: {
-    seq1Aligned: string;
-    seq2Aligned: string;
-  }) => {
-    const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-
-    return (
-      <div className="space-y-5">
-        <div>
-          <p className="text-sm font-bold text-gray-200 mb-3 tracking-wide uppercase">
-            Sequence 1 Alignment
-          </p>
-          <div className="flex flex-wrap gap-1 p-4 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl border border-slate-600 shadow-sm">
-            {seq1Aligned.split("").map((char, idx) => (
-              <div
-                key={idx}
-                onMouseEnter={() => setHoveredIndex(idx)}
-                onMouseLeave={() => setHoveredIndex(null)}
-                className={`w-9 h-9 flex items-center justify-center font-mono font-bold text-white rounded-lg transition-all duration-150 cursor-pointer shadow-md ${
-                  hoveredIndex === idx
-                    ? "ring-4 ring-offset-2 ring-orange-400 shadow-lg scale-125 -translate-y-1"
-                    : "hover:shadow-lg"
-                } ${getCharColor(char, seq2Aligned[idx])}`}
-              >
-                {char}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <p className="text-sm font-bold text-gray-200 mb-3 tracking-wide uppercase">
-            Sequence 2 Alignment
-          </p>
-          <div className="flex flex-wrap gap-1 p-4 bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl border border-slate-600 shadow-sm">
-            {seq2Aligned.split("").map((char, idx) => (
-              <div
-                key={idx}
-                onMouseEnter={() => setHoveredIndex(idx)}
-                onMouseLeave={() => setHoveredIndex(null)}
-                className={`w-9 h-9 flex items-center justify-center font-mono font-bold text-white rounded-lg transition-all duration-150 cursor-pointer shadow-md ${
-                  hoveredIndex === idx
-                    ? "ring-4 ring-offset-2 ring-orange-400 shadow-lg scale-125 -translate-y-1"
-                    : "hover:shadow-lg"
-                } ${getCharColor(seq1Aligned[idx], char)}`}
-              >
-                {char}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Legend */}
-        <div className="flex flex-wrap gap-6 pt-3 px-2">
-          <div className="flex items-center gap-3">
-            <div className="w-5 h-5 bg-emerald-600 rounded-full shadow-md"></div>
-            <span className="text-sm font-semibold text-gray-300">Match</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-5 h-5 bg-amber-500 rounded-full shadow-md"></div>
-            <span className="text-sm font-semibold text-gray-300">
-              Mismatch
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="w-5 h-5 bg-red-600 rounded-full shadow-md"></div>
-            <span className="text-sm font-semibold text-gray-300">Gap</span>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
+  const isValidDNA = (s: string) => /^[ATGC]*$/.test(s.toUpperCase());
   const seq1Valid = isValidDNA(seq1);
   const seq2Valid = isValidDNA(seq2);
   const canAlign = seq1.length > 0 && seq2.length > 0 && seq1Valid && seq2Valid;
 
+  const handleAlign = () => {
+    setRunning(true);
+    setTimeout(() => {
+      const r = needlemanWunsch(
+        seq1.toUpperCase(),
+        seq2.toUpperCase(),
+        scoring,
+      );
+      setResult(r);
+      setRunning(false);
+    }, 60);
+  };
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-black via-slate-950 to-gray-900 text-white p-6 md:p-10">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <header className="mb-8">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-red-600 rounded-full flex items-center justify-center shadow-lg">
-              <span className="text-xl font-bold text-white">🧬</span>
-            </div>
-            <div>
-              <h1 className="text-4xl md:text-5xl font-black mb-2 text-white">
-                DNA Sequence Alignment
-              </h1>
-              <p className="text-base md:text-lg text-gray-400 font-medium">
-                Needleman-Wunsch Algorithm | O(M × N) Complexity
-              </p>
-            </div>
+    <div
+      className="min-h-screen text-white overflow-x-hidden"
+      style={{
+        background: "#040c14",
+        fontFamily: "'Space Mono', 'JetBrains Mono', monospace",
+      }}
+    >
+      <HelixCanvas />
+
+      {/* Grid overlay */}
+      <div
+        className="fixed inset-0 z-0 pointer-events-none"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(251,146,60,0.03) 1px,transparent 1px),linear-gradient(90deg,rgba(251,146,60,0.03) 1px,transparent 1px)",
+          backgroundSize: "40px 40px",
+        }}
+      />
+
+      <div className="relative z-10 max-w-7xl mx-auto px-4 py-8 md:py-12">
+        {/* ── Header ── */}
+        <header className="mb-10">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-orange-500/30 bg-orange-500/10 mb-4">
+            <span className="text-orange-400 text-xs font-bold uppercase tracking-widest">
+              Bioinformatics Tool
+            </span>
           </div>
+          <h1 className="text-5xl md:text-6xl font-black tracking-tight leading-none mb-3">
+            <span className="text-white">DNA</span>
+            <span
+              style={{
+                background: "linear-gradient(90deg,#f97316,#ef4444)",
+                WebkitBackgroundClip: "text",
+                WebkitTextFillColor: "transparent",
+              }}
+            >
+              {" "}
+              Alignment
+            </span>
+          </h1>
+          <p className="text-gray-500 text-sm tracking-widest uppercase font-bold">
+            Hirschberg · O(MN) Time · O(min M,N) Space
+          </p>
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Control Panel */}
-          <div className="lg:col-span-1 space-y-6">
-            {/* Input Section */}
-            <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700 shadow-md hover:shadow-lg transition-shadow">
-              <h2 className="text-base font-bold mb-4 text-white flex items-center gap-3 uppercase tracking-wide">
-                <div className="w-8 h-8 bg-gradient-to-br from-orange-500 to-orange-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                  1
-                </div>
-                Input Sequences
-              </h2>
-
-              <div className="space-y-4">
-                {/* Sequence 1 */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">
-                    DNA Sequence 1
-                  </label>
-                  <textarea
-                    value={seq1}
-                    onChange={(e) => setSeq1(e.target.value)}
-                    className={`w-full px-4 py-3 bg-slate-700 rounded-lg border text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono text-sm transition-all ${
-                      seq1 && !seq1Valid ? "border-red-400" : "border-slate-600"
-                    }`}
-                    placeholder="e.g., ATGC"
-                    rows={3}
-                  />
-                  {seq1 && !seq1Valid && (
-                    <p className="text-red-500 text-xs mt-2 font-semibold flex items-center gap-1">
-                      ⚠️ Only A, T, G, C allowed
-                    </p>
-                  )}
-                </div>
-
-                {/* Sequence 2 */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-2">
-                    DNA Sequence 2
-                  </label>
-                  <textarea
-                    value={seq2}
-                    onChange={(e) => setSeq2(e.target.value)}
-                    className={`w-full px-4 py-3 bg-slate-700 rounded-lg border text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 font-mono text-sm transition-all ${
-                      seq2 && !seq2Valid ? "border-red-400" : "border-slate-600"
-                    }`}
-                    placeholder="e.g., AGGTC"
-                    rows={3}
-                  />
-                  {seq2 && !seq2Valid && (
-                    <p className="text-red-500 text-xs mt-2 font-semibold flex items-center gap-1">
-                      ⚠️ Only A, T, G, C allowed
-                    </p>
-                  )}
-                </div>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* ── Left panel ── */}
+          <div className="lg:col-span-4 space-y-4">
+            {/* Sequences */}
+            <div
+              className="rounded-2xl border border-slate-700/60 overflow-hidden"
+              style={{
+                background: "rgba(15,23,42,0.85)",
+                backdropFilter: "blur(12px)",
+              }}
+            >
+              <div className="px-5 py-3 border-b border-slate-700/60 flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-orange-400" />
+                <span className="text-xs font-bold uppercase tracking-widest text-gray-400">
+                  Input Sequences
+                </span>
+              </div>
+              <div className="p-5 space-y-4">
+                {[
+                  {
+                    label: "Sequence A",
+                    val: seq1,
+                    set: setSeq1,
+                    valid: seq1Valid,
+                  },
+                  {
+                    label: "Sequence B",
+                    val: seq2,
+                    set: setSeq2,
+                    valid: seq2Valid,
+                  },
+                ].map(({ label, val, set, valid }) => (
+                  <div key={label}>
+                    <label className="text-[10px] uppercase tracking-widest text-gray-500 font-bold block mb-1.5">
+                      {label}
+                    </label>
+                    <textarea
+                      value={val}
+                      onChange={(e) =>
+                        set(
+                          e.target.value.toUpperCase().replace(/[^ATGC]/g, ""),
+                        )
+                      }
+                      rows={2}
+                      placeholder="A T G C …"
+                      className="w-full px-3 py-2 rounded-xl font-mono text-sm font-black resize-none transition-all outline-none"
+                      style={{
+                        background: "#0f172a",
+                        border: `1.5px solid ${val && !valid ? "#ef4444" : "#334155"}`,
+                        color: "#f8fafc",
+                        letterSpacing: "0.12em",
+                      }}
+                      onFocus={(e) => (e.target.style.borderColor = "#f97316")}
+                      onBlur={(e) =>
+                        (e.target.style.borderColor =
+                          val && !valid ? "#ef4444" : "#334155")
+                      }
+                    />
+                    <div className="flex gap-1 mt-1.5 flex-wrap">
+                      {val.split("").map((c, i) => (
+                        <span
+                          key={i}
+                          className="text-[10px] font-black px-1 py-0.5 rounded"
+                          style={{
+                            background:
+                              {
+                                A: "#166534",
+                                T: "#1e3a5f",
+                                G: "#78350f",
+                                C: "#581c87",
+                              }[c] || "#1e293b",
+                            color: "#fff",
+                          }}
+                        >
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
-            {/* Scoring System */}
-            <div className="bg-slate-800 rounded-2xl p-6 border border-slate-700 shadow-md hover:shadow-lg transition-shadow">
-              <h2 className="text-base font-bold mb-4 text-white flex items-center gap-3 uppercase tracking-wide">
-                <div className="w-8 h-8 bg-gradient-to-br from-orange-500 to-orange-600 rounded-full flex items-center justify-center text-white text-xs font-bold">
-                  ⚙
-                </div>
-                Scoring System
-              </h2>
-
-              <div className="space-y-4">
-                {/* Match Score */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-1">
-                    Match Score:{" "}
-                    <span className="text-orange-400 font-bold">
-                      {scoring.match}
-                    </span>
-                  </label>
-                  <input
-                    type="number"
-                    value={scoring.match}
-                    onChange={(e) =>
-                      setScoring({
-                        ...scoring,
-                        match: parseInt(e.target.value) || 0,
-                      })
-                    }
-                    className="w-full px-4 py-2 bg-slate-700 rounded-lg border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-orange-500 font-semibold transition-all"
-                  />
-                </div>
-
-                {/* Mismatch Score */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-1">
-                    Mismatch Score:{" "}
-                    <span className="text-red-400 font-bold">
-                      {scoring.mismatch}
-                    </span>
-                  </label>
-                  <input
-                    type="number"
-                    value={scoring.mismatch}
-                    onChange={(e) =>
-                      setScoring({
-                        ...scoring,
-                        mismatch: parseInt(e.target.value) || 0,
-                      })
-                    }
-                    className="w-full px-4 py-2 bg-slate-700 rounded-lg border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-orange-500 font-semibold transition-all"
-                  />
-                </div>
-
-                {/* Gap Penalty */}
-                <div>
-                  <label className="block text-sm font-semibold text-gray-300 mb-1">
-                    Gap Penalty:{" "}
-                    <span className="text-orange-400 font-bold">
-                      {scoring.gap}
-                    </span>
-                  </label>
-                  <input
-                    type="number"
-                    value={scoring.gap}
-                    onChange={(e) =>
-                      setScoring({
-                        ...scoring,
-                        gap: parseInt(e.target.value) || 0,
-                      })
-                    }
-                    className="w-full px-4 py-2 bg-slate-700 rounded-lg border border-slate-600 text-white focus:outline-none focus:ring-2 focus:ring-orange-500 font-semibold transition-all"
-                  />
-                </div>
+            {/* Scoring */}
+            <div
+              className="rounded-2xl border border-slate-700/60 overflow-hidden"
+              style={{
+                background: "rgba(15,23,42,0.85)",
+                backdropFilter: "blur(12px)",
+              }}
+            >
+              <div className="px-5 py-3 border-b border-slate-700/60 flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-400" />
+                <span className="text-xs font-bold uppercase tracking-widest text-gray-400">
+                  Scoring Matrix
+                </span>
+              </div>
+              <div className="p-5 space-y-5">
+                <SliderInput
+                  label="Match"
+                  value={scoring.match}
+                  onChange={(v) => setScoring({ ...scoring, match: v })}
+                  color="#22c55e"
+                />
+                <SliderInput
+                  label="Mismatch"
+                  value={scoring.mismatch}
+                  onChange={(v) => setScoring({ ...scoring, mismatch: v })}
+                  color="#f59e0b"
+                />
+                <SliderInput
+                  label="Gap Penalty"
+                  value={scoring.gap}
+                  onChange={(v) => setScoring({ ...scoring, gap: v })}
+                  color="#ef4444"
+                />
               </div>
             </div>
 
-            {/* Align Button */}
+            {/* Run button */}
             <button
               onClick={handleAlign}
-              disabled={!canAlign}
-              className={`w-full py-4 rounded-xl font-bold text-base transition-all duration-200 uppercase tracking-wide shadow-md hover:shadow-lg ${
-                canAlign
-                  ? "bg-gradient-to-r from-orange-500 to-red-600 text-white hover:from-orange-600 hover:to-red-700 cursor-pointer transform hover:scale-105"
-                  : "bg-gray-300 text-gray-500 cursor-not-allowed"
-              }`}
+              disabled={!canAlign || running}
+              className="w-full py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all duration-200 relative overflow-hidden"
+              style={{
+                background: canAlign
+                  ? "linear-gradient(135deg,#ea580c,#dc2626)"
+                  : "#1e293b",
+                color: canAlign ? "#fff" : "#475569",
+                boxShadow: canAlign
+                  ? "0 0 30px #f9731655,0 4px 20px #00000066"
+                  : "none",
+                cursor: canAlign ? "pointer" : "not-allowed",
+              }}
             >
-              ⚡ Run Alignment
+              {running ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg
+                    className="animate-spin w-4 h-4"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                  >
+                    <circle
+                      cx="12"
+                      cy="12"
+                      r="10"
+                      stroke="currentColor"
+                      strokeWidth="3"
+                      strokeDasharray="60"
+                      strokeDashoffset="20"
+                    />
+                  </svg>
+                  Computing…
+                </span>
+              ) : (
+                "⚡ Run Alignment"
+              )}
             </button>
 
-            {/* Complexity Info */}
-            <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-2xl p-6 border border-orange-500/30">
-              <p className="text-white font-semibold">
-                <span className="block text-xs uppercase tracking-wide text-gray-400 mb-2 font-bold">
-                  Time Complexity
-                </span>
-                <span className="text-3xl font-black text-orange-400">
-                  O(M × N)
-                </span>
-              </p>
-              <p className="text-xs text-gray-400 mt-3 font-medium">
-                Space Complexity: O(M × N)
-              </p>
+            {/* Complexity badge */}
+            <div
+              className="rounded-2xl border border-orange-500/20 p-4"
+              style={{ background: "rgba(251,146,60,0.05)" }}
+            >
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: "Time", val: "O(M×N)" },
+                  { label: "Space", val: "O(min)" },
+                ].map((b) => (
+                  <div key={b.label} className="text-center">
+                    <div className="text-orange-400 font-black text-lg">
+                      {b.val}
+                    </div>
+                    <div className="text-[10px] uppercase tracking-widest text-gray-500 font-bold">
+                      {b.label}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* Results Panel */}
-          <div className="lg:col-span-2 space-y-8">
-            {result && (
+          {/* ── Right panel ── */}
+          <div className="lg:col-span-8 space-y-4">
+            {result ? (
               <>
-                {/* Alignment Results */}
-                <div className="bg-slate-800 rounded-2xl p-7 border border-slate-700 shadow-md hover:shadow-lg transition-shadow">
-                  <h2 className="text-lg font-bold mb-6 text-white flex items-center gap-3 uppercase tracking-wide">
-                    <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-red-600 rounded-full flex items-center justify-center text-white text-base font-bold">
-                      ✓
-                    </div>
-                    Alignment Results
-                  </h2>
-
-                  <div className="space-y-5">
-                    {/* Quality Indicator - Circular Progress */}
-                    <div className="flex justify-center py-4">
-                      <AlignmentQualityIndicator
-                        seq1Aligned={result.seq1Aligned}
-                        seq2Aligned={result.seq2Aligned}
-                      />
-                    </div>
-
-                    {/* Score Card */}
-                    <div className="bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl p-5 border border-orange-500/30">
-                      <p className="text-orange-400 text-xs font-bold uppercase tracking-wide mb-1">
-                        Final Score
-                      </p>
-                      <p className="text-4xl font-black text-orange-400">
-                        {result.score}
-                      </p>
-                    </div>
-
-                    {/* Execution Time Card */}
-                    <div className="bg-gradient-to-br from-slate-700 to-slate-800 rounded-xl p-5 border border-slate-600">
-                      <p className="text-gray-300 text-xs font-bold uppercase tracking-wide mb-1">
-                        Execution Time
-                      </p>
-                      <p className="text-3xl font-black text-white">
-                        {result.executionTime.toFixed(4)}
-                        <span className="text-lg text-gray-400"> ms</span>
-                      </p>
-                      <p className="text-xs text-gray-400 mt-2 font-semibold">
-                        ✓ Performance Verified
-                      </p>
-                    </div>
-
-                    {/* Aligned Sequences with Visual Visualization */}
-                    <div>
-                      <p className="text-gray-800 font-bold mb-4 text-sm uppercase tracking-wide">
-                        Visual Alignment
-                      </p>
-                      <VisualAlignment
-                        seq1Aligned={result.seq1Aligned}
-                        seq2Aligned={result.seq2Aligned}
-                      />
-                    </div>
+                {/* Stats row */}
+                <div className="grid grid-cols-3 gap-4">
+                  <div
+                    className="rounded-2xl border border-slate-700/60 p-4 flex flex-col items-center justify-center"
+                    style={{
+                      background: "rgba(15,23,42,0.85)",
+                      backdropFilter: "blur(12px)",
+                    }}
+                  >
+                    <ScoreBadge score={result.score} />
+                  </div>
+                  <div
+                    className="col-span-2 rounded-2xl border border-slate-700/60 p-5 flex items-center justify-center"
+                    style={{
+                      background: "rgba(15,23,42,0.85)",
+                      backdropFilter: "blur(12px)",
+                    }}
+                  >
+                    <QualityRing
+                      seq1Aligned={result.seq1Aligned}
+                      seq2Aligned={result.seq2Aligned}
+                    />
                   </div>
                 </div>
 
-                {/* Scoring Matrix Visualization */}
-                <div className="bg-slate-800 rounded-2xl p-7 border border-slate-700 shadow-md hover:shadow-lg transition-shadow">
-                  <h2 className="text-lg font-bold mb-6 text-white flex items-center gap-3 uppercase tracking-wide">
-                    <div className="w-10 h-10 bg-gradient-to-br from-gray-700 to-gray-900 rounded-full flex items-center justify-center text-white text-base font-bold">
-                      📊
-                    </div>
-                    Scoring Matrix
-                  </h2>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-xs border-collapse">
-                      <thead>
-                        <tr className="bg-gradient-to-r from-slate-900 to-slate-950">
-                          <th className="border border-slate-600 px-3 py-2 text-white font-bold w-12">
-                            -
-                          </th>
-                          {seq2.split("").map((char, idx) => (
-                            <th
-                              key={idx}
-                              className="border border-slate-600 px-3 py-2 text-white font-bold w-12 bg-gradient-to-r from-slate-900 to-slate-950"
-                            >
-                              {char}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.matrix.map((row, i) => (
-                          <tr key={i}>
-                            <td className="border border-slate-600 px-3 py-2 text-white font-bold bg-gradient-to-r from-slate-700 to-slate-800 w-12 text-center">
-                              {i === 0 ? "-" : seq1[i - 1]}
-                            </td>
-                            {row.map((cell, j) => (
-                              <td
-                                key={j}
-                                className={`border border-slate-600 px-3 py-2 text-center w-12 font-mono font-bold transition-all ${
-                                  isPathCell(i, j)
-                                    ? "bg-gradient-to-br from-orange-500 to-red-600 text-white shadow-md"
-                                    : "bg-slate-700 text-gray-300 hover:bg-gradient-to-br hover:from-slate-600 hover:to-slate-700"
-                                }`}
-                              >
-                                {cell}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                {/* Timing */}
+                <div
+                  className="rounded-xl border border-slate-700/40 px-5 py-3 flex items-center gap-4"
+                  style={{ background: "rgba(15,23,42,0.6)" }}
+                >
+                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                  <span className="text-xs uppercase tracking-widest text-gray-500 font-bold">
+                    Execution
+                  </span>
+                  <span className="font-black text-green-400 text-lg ml-auto">
+                    {result.executionTime.toFixed(4)}
+                    <span className="text-gray-500 text-sm font-normal ml-1">
+                      ms
+                    </span>
+                  </span>
+                  <span className="text-[10px] text-gray-600 uppercase tracking-widest font-bold">
+                    Performance Verified
+                  </span>
+                </div>
+
+                {/* Tab panel */}
+                <div
+                  className="rounded-2xl border border-slate-700/60 overflow-hidden"
+                  style={{
+                    background: "rgba(15,23,42,0.85)",
+                    backdropFilter: "blur(12px)",
+                  }}
+                >
+                  <div className="flex border-b border-slate-700/60">
+                    {(["visual", "matrix"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setActiveTab(tab)}
+                        className="flex-1 px-5 py-3 text-xs font-black uppercase tracking-widest transition-all"
+                        style={{
+                          background:
+                            activeTab === tab
+                              ? "rgba(249,115,22,0.12)"
+                              : "transparent",
+                          color: activeTab === tab ? "#f97316" : "#64748b",
+                          borderBottom:
+                            activeTab === tab
+                              ? "2px solid #f97316"
+                              : "2px solid transparent",
+                        }}
+                      >
+                        {tab === "visual" ? "🧬 Sequence View" : "📊 DP Matrix"}
+                      </button>
+                    ))}
                   </div>
-                  <p className="text-xs text-gray-300 mt-4 font-semibold flex items-center gap-2">
-                    <span className="inline-block w-4 h-4 bg-gradient-to-br from-orange-500 to-red-600 rounded"></span>
-                    Optimal alignment path (traceback)
-                  </p>
+
+                  <div className="p-6">
+                    {activeTab === "visual" ? (
+                      <SeqVisualizer
+                        seq1Aligned={result.seq1Aligned}
+                        seq2Aligned={result.seq2Aligned}
+                      />
+                    ) : (
+                      <MatrixView
+                        matrix={result.matrix}
+                        seq1={seq1.toUpperCase()}
+                        seq2={seq2.toUpperCase()}
+                        traceback={result.traceback}
+                      />
+                    )}
+                  </div>
+                </div>
+
+                {/* Aligned strings */}
+                <div
+                  className="rounded-2xl border border-slate-700/60 p-5 space-y-3"
+                  style={{
+                    background: "rgba(15,23,42,0.85)",
+                    backdropFilter: "blur(12px)",
+                  }}
+                >
+                  <div className="text-[10px] uppercase tracking-widest text-gray-500 font-bold mb-1">
+                    Raw Alignment Strings
+                  </div>
+                  {[result.seq1Aligned, result.seq2Aligned].map((s, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <span className="text-[10px] font-black text-orange-400 w-4">
+                        S{i + 1}
+                      </span>
+                      <div
+                        className="flex-1 px-3 py-2 rounded-lg font-mono text-sm font-black tracking-widest overflow-x-auto"
+                        style={{
+                          background: "#0f172a",
+                          border: "1px solid #1e293b",
+                          color: "#f8fafc",
+                        }}
+                      >
+                        {s.split("").map((c, j) => (
+                          <span
+                            key={j}
+                            style={{
+                              color:
+                                c === "-"
+                                  ? "#ef4444"
+                                  : s === result.seq1Aligned
+                                    ? result.seq2Aligned[j] === c
+                                      ? "#22c55e"
+                                      : "#f59e0b"
+                                    : result.seq1Aligned[j] === c
+                                      ? "#22c55e"
+                                      : "#f59e0b",
+                            }}
+                          >
+                            {c}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </>
-            )}
-
-            {!result && (
-              <div className="bg-gradient-to-br from-slate-800 to-slate-900 rounded-2xl p-16 border border-slate-700 text-center shadow-sm">
-                <p className="text-gray-300 font-bold text-lg">
-                  🔍 Run alignment to visualize results
+            ) : (
+              <div
+                className="rounded-2xl border border-slate-700/40 flex flex-col items-center justify-center py-28 gap-5"
+                style={{
+                  background: "rgba(15,23,42,0.5)",
+                  backdropFilter: "blur(12px)",
+                }}
+              >
+                <div className="text-6xl opacity-30">🧬</div>
+                <p className="text-gray-500 font-bold uppercase tracking-widest text-sm">
+                  Enter sequences and run alignment
                 </p>
-                <p className="text-gray-400 text-sm mt-2">
-                  Enter DNA sequences and click "Run Alignment"
-                </p>
+                <div className="text-[11px] text-gray-600 font-mono">
+                  Hirschberg · Divide & Conquer · Linear Space
+                </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:currentColor; cursor:pointer; }
+        ::-webkit-scrollbar { width:5px; height:5px; }
+        ::-webkit-scrollbar-track { background:#0f172a; }
+        ::-webkit-scrollbar-thumb { background:#334155; border-radius:9px; }
+      `}</style>
     </div>
   );
 }
