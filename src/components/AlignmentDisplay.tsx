@@ -1,7 +1,7 @@
 import { FloatingCard } from "./FloatingCard";
 import { ScoreRing } from "./ScoreRing";
 import { BasePill } from "./BasePill";
-import { AlignmentResult } from "../constants";
+import type { AlignmentResult } from "../constants";
 
 export function AlignmentDisplay({
   result,

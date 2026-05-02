@@ -15,7 +15,6 @@ export function HelixSVG({
   seq2: string;
   scanIdx: number;
 }) {
-  const rafRef = useRef(0);
   const tickRef = useRef(0);
   const [, forceUpdate] = useState(0);
 
@@ -122,7 +121,7 @@ export function HelixSVG({
       })}
 
       {/* Rungs + nodes (depth-sorted) */}
-      {sortedRungs.map((rung, si) => {
+      {sortedRungs.map((rung) => {
         const i = rungs.indexOf(rung);
         const rungAlpha = 0.35 + 0.45 * Math.abs(rung.depth);
         const matchColor = rung.isMatch ? "#4CAF50" : "#FF9800";
